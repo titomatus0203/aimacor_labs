@@ -9,9 +9,9 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://github.com/TU_USUARIO/aimacor_labs"
+Repository = "https://github.com/titomatus0203/aimacor_labs"
 
 [tool.comfy]
-PublisherId = "TU_PUBLISHER_ID"
+PublisherId = "aimacor-labs"
 DisplayName = "Aimacor Labs"
 Icon = ""
