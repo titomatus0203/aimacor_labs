@@ -249,6 +249,7 @@ app.registerExtension({
                             stopBtn.style.display = "none";
                             copyBtn.style.display = "inline-block";
                             copyBtn.dataset.path = data.full_dir || "";
+                            row.dataset.dlState = "exists";
                         } else if (data.is_downloading) {
                             copyBtn.style.display = "none";
                             setLed(led, "var(--neon-yellow)", true, true);
@@ -265,6 +266,7 @@ app.registerExtension({
                             const pct = data.progress >= 0 ? data.progress : 0;
                             progBar.style.width = pct + "%";
                             progText.innerText = data.dl_status && data.dl_status !== "downloading" ? data.dl_status.toUpperCase() : `${pct}%`;
+                            row.dataset.dlState = "downloading";
                         } else if (data.message === "auth_required") {
                             copyBtn.style.display = "none";
                             progWrap.style.display = "none";
@@ -273,6 +275,7 @@ app.registerExtension({
                             btn.style.display = "inline-block"; btn.innerText = "Need Token"; btn.disabled = false;
                             btn.style.borderColor = "var(--neon-magenta)"; btn.style.color = "var(--neon-magenta)";
                             stopBtn.style.display = "none";
+                            row.dataset.dlState = "needs_token";
                         } else {
                             copyBtn.style.display = "none";
                             progWrap.style.display = "none";
@@ -281,6 +284,7 @@ app.registerExtension({
                             btn.style.display = "inline-block"; btn.innerText = "Download"; btn.disabled = false;
                             btn.style.borderColor = "#2a3646"; btn.style.color = "#d8faff";
                             stopBtn.style.display = "none";
+                            row.dataset.dlState = "not_downloaded";
                         }
                         return data;
                     } catch (e) {
@@ -303,16 +307,25 @@ app.registerExtension({
                     stopBtn.innerText = "⏹ Stop"; stopBtn.disabled = false; // reset por si quedó "Cancelling..." de antes
                     setLed(led, "var(--neon-yellow)", true, true);
 
-                    try {
-                        await fetch("/aimacor/download", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-                        const poll = setInterval(async () => {
-                            const data = await checkRowStatus(row);
-                            // Detener el polling en CUALQUIER estado final: completado,
-                            // cancelado, o error — no solo cuando "exists" es true.
-                            if (!data || !data.is_downloading) clearInterval(poll);
-                        }, 1500);
-                        row.dataset.pollId = poll;
-                    } catch (e) { }
+                    // downloadRow devuelve una promesa que se resuelve cuando ESTA fila
+                    // termina (completada, cancelada o con error) — es lo que permite que
+                    // "Download All Enabled" descargue una fila a la vez en vez de todas
+                    // en simultáneo.
+                    return new Promise(async (resolve) => {
+                        try {
+                            await fetch("/aimacor/download", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+                            const poll = setInterval(async () => {
+                                const data = await checkRowStatus(row);
+                                // Detener el polling en CUALQUIER estado final: completado,
+                                // cancelado, o error — no solo cuando "exists" es true.
+                                if (!data || !data.is_downloading) {
+                                    clearInterval(poll);
+                                    resolve();
+                                }
+                            }, 1500);
+                            row.dataset.pollId = poll;
+                        } catch (e) { resolve(); }
+                    });
                 };
 
                 const cancelRow = async (row) => {
@@ -543,17 +556,46 @@ app.registerExtension({
                 });
 
                 container.querySelector("#amc-btn-dl-all").addEventListener("click", async () => {
-                    Array.from(this.rowsContainer.children).forEach(r => {
-                        if (!r.querySelector(".model-toggle").checked) return;
-                        const btn = r.querySelector(".amc-dl-btn");
-                        const led = r.querySelector(".amc-led");
-                        const bg = led.style.backgroundColor;
-                        if (bg.includes("255, 45, 85") || bg === "var(--neon-red)" || bg === "rgb(255, 45, 85)") {
-                            btn.click();
-                        } else if (bg.includes("255, 0, 230") || bg === "rgb(255, 0, 230)") {
-                            alert("A token is missing to download secure models.");
-                        }
+                    const dlAllBtn = container.querySelector("#amc-btn-dl-all");
+                    if (dlAllBtn.dataset.queueRunning === "true") return; // evita doble clic mientras corre la cola
+                    dlAllBtn.dataset.queueRunning = "true";
+                    const originalText = dlAllBtn.innerText;
+
+                    const enabledRows = Array.from(this.rowsContainer.children).filter(
+                        r => r.querySelector(".model-toggle").checked
+                    );
+
+                    // Refrescamos el estado real de cada fila ANTES de armar la cola,
+                    // para no basarnos en un color que pudo haber quedado desactualizado.
+                    dlAllBtn.disabled = true;
+                    dlAllBtn.innerText = "🔄 Checking...";
+                    for (const row of enabledRows) {
+                        await checkRowStatus(row);
+                    }
+
+                    const pending = enabledRows.filter(r => r.dataset.dlState === "not_downloaded");
+                    const blocked = enabledRows.filter(r => r.dataset.dlState === "needs_token");
+
+                    if (blocked.length > 0) {
+                        alert(`${blocked.length} archivo(s) necesitan un token de API (Civitai/HuggingFace) y se omitieron de la cola.`);
+                    }
+
+                    // Marcamos visualmente el resto de la cola como "En espera" mientras
+                    // se descarga la primera — así se ve claro que van una por una, no
+                    // que el botón no hizo nada.
+                    pending.forEach(row => {
+                        const btn = row.querySelector(".amc-dl-btn");
+                        if (btn) { btn.innerText = "⏳ Queued"; btn.disabled = true; }
                     });
+
+                    for (let i = 0; i < pending.length; i++) {
+                        dlAllBtn.innerText = `⬇️ Downloading ${i + 1}/${pending.length}...`;
+                        await downloadRow(pending[i]); // espera a que ESTA termine antes de seguir
+                    }
+
+                    dlAllBtn.innerText = originalText;
+                    dlAllBtn.disabled = false;
+                    dlAllBtn.dataset.queueRunning = "false";
                 });
 
                 container.querySelector("#amc-btn-savetokens").addEventListener("click", async (e) => {
