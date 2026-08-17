@@ -200,7 +200,47 @@ app.registerExtension({
                     row.querySelector(".amc-controls-normal").style.display = show ? "none" : "flex";
                 };
 
+                // ============================================================
+                // Cola global de descargas
+                // ------------------------------------------------------------
+                // Garantiza que SOLO haya una descarga activa a la vez para
+                // este nodo, sin importar si el usuario le dio clic al botón
+                // "Download" de una fila individual o a "Download All
+                // Enabled". Cualquier fila que se agrega mientras ya hay algo
+                // corriendo espera su turno mostrando "⏳ Queued".
+                // ============================================================
+                const downloadQueue = [];
+                let isProcessingQueue = false;
+
+                const processQueue = async () => {
+                    if (isProcessingQueue) return;
+                    isProcessingQueue = true;
+                    while (downloadQueue.length > 0) {
+                        const row = downloadQueue.shift();
+                        row.dataset.queued = "false";
+                        if (!row.isConnected) continue; // la fila se borró mientras esperaba
+                        await downloadRow(row); // downloadRow resuelve cuando ESA fila termina
+                    }
+                    isProcessingQueue = false;
+                };
+
+                const enqueueDownload = (row) => {
+                    if (downloadQueue.includes(row) || row.dataset.queued === "true") return;
+                    const willWait = isProcessingQueue || downloadQueue.length > 0;
+                    downloadQueue.push(row);
+                    if (willWait) {
+                        row.dataset.queued = "true";
+                        const btn = row.querySelector(".amc-dl-btn");
+                        if (btn) { btn.innerText = "⏳ Queued"; btn.disabled = true; }
+                    }
+                    processQueue();
+                };
+
                 const checkRowStatus = async (row) => {
+                    // Mientras la fila espera su turno en la cola, no hay nada
+                    // que consultar todavía — y evita que el poll le borre el
+                    // texto "Queued" de vuelta a "Download".
+                    if (row.dataset.queued === "true") return;
                     const payload = getRowPayload(row);
                     if (!payload.url || payload.url === "none") return;
 
@@ -415,7 +455,7 @@ app.registerExtension({
                         forceResize();
                     });
 
-                    row.querySelector(".amc-dl-btn").addEventListener("click", () => downloadRow(row));
+                    row.querySelector(".amc-dl-btn").addEventListener("click", () => enqueueDownload(row));
                     row.querySelector(".amc-stop-btn").addEventListener("click", () => cancelRow(row));
 
                     row.querySelector(".amc-copy-btn").addEventListener("click", (e) => {
@@ -567,30 +607,32 @@ app.registerExtension({
 
                     // Refrescamos el estado real de cada fila ANTES de armar la cola,
                     // para no basarnos en un color que pudo haber quedado desactualizado.
+                    // (Si ya está esperando en la cola por un clic individual previo,
+                    // no hace falta re-consultar su estado.)
                     dlAllBtn.disabled = true;
                     dlAllBtn.innerText = "🔄 Checking...";
                     for (const row of enabledRows) {
-                        await checkRowStatus(row);
+                        if (row.dataset.queued !== "true") await checkRowStatus(row);
                     }
 
-                    const pending = enabledRows.filter(r => r.dataset.dlState === "not_downloaded");
+                    const pending = enabledRows.filter(r => r.dataset.dlState === "not_downloaded" && r.dataset.queued !== "true");
                     const blocked = enabledRows.filter(r => r.dataset.dlState === "needs_token");
 
                     if (blocked.length > 0) {
                         alert(`${blocked.length} archivo(s) necesitan un token de API (Civitai/HuggingFace) y se omitieron de la cola.`);
                     }
 
-                    // Marcamos visualmente el resto de la cola como "En espera" mientras
-                    // se descarga la primera — así se ve claro que van una por una, no
-                    // que el botón no hizo nada.
-                    pending.forEach(row => {
-                        const btn = row.querySelector(".amc-dl-btn");
-                        if (btn) { btn.innerText = "⏳ Queued"; btn.disabled = true; }
-                    });
+                    // Encolamos todo a través de la MISMA cola global que usan los
+                    // botones individuales — así nunca hay dos descargas corriendo
+                    // en paralelo sin importar cómo se hayan disparado.
+                    pending.forEach(row => enqueueDownload(row));
 
-                    for (let i = 0; i < pending.length; i++) {
-                        dlAllBtn.innerText = `⬇️ Downloading ${i + 1}/${pending.length}...`;
-                        await downloadRow(pending[i]); // espera a que ESTA termine antes de seguir
+                    const total = pending.length;
+                    while (isProcessingQueue || downloadQueue.length > 0) {
+                        const remaining = downloadQueue.length + (isProcessingQueue ? 1 : 0);
+                        const doneCount = Math.max(0, total - remaining);
+                        dlAllBtn.innerText = total > 0 ? `⬇️ Downloading ${Math.min(doneCount + 1, total)}/${total}...` : "⬇️ Downloading...";
+                        await new Promise(r => setTimeout(r, 500));
                     }
 
                     dlAllBtn.innerText = originalText;
