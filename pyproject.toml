@@ -1,0 +1,17 @@
+[project]
+name = "aimacor_labs"
+description = "Aimacor Labs — Model Downloader: descargador integrado de modelos, LoRAs, VAEs y checkpoints para ComfyUI, con soporte para Civitai y HuggingFace."
+version = "1.0.1"
+license = {file = "LICENSE"}
+dependencies = [
+    "requests",
+    "huggingface_hub",
+]
+
+[project.urls]
+Repository = "https://github.com/titomatus0203/aimacor_labs"
+
+[tool.comfy]
+PublisherId = "aimacor-labs"
+DisplayName = "Aimacor Labs"
+Icon = ""
